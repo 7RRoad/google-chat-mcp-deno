@@ -17,11 +17,14 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 
 import { GoogleAuthService } from "./services/auth.js";
 import { GoogleChatClient } from "./services/chatClient.js";
+import { GooglePeopleClient } from "./services/peopleClient.js";
 import { registerSpaceTools } from "./tools/spaces.js";
 import { registerMessageTools } from "./tools/messages.js";
 import { registerMemberTools } from "./tools/members.js";
 import { registerReactionTools } from "./tools/reactions.js";
 import { registerReadStateTools } from "./tools/readState.js";
+import { registerDirectoryTools } from "./tools/directory.js";
+import { registerAvailabilityTools } from "./tools/availability.js";
 
 function checkEnv(): void {
   const missing = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN"].filter(
@@ -38,12 +41,15 @@ function buildServer(): McpServer {
   const server = new McpServer({ name: "google-chat-mcp-server", version: "1.0.0" });
   const auth = new GoogleAuthService();
   const client = new GoogleChatClient(auth);
+  const peopleClient = new GooglePeopleClient(auth);
 
   registerSpaceTools(server, client);
   registerMessageTools(server, client);
   registerMemberTools(server, client);
   registerReactionTools(server, client);
   registerReadStateTools(server, client);
+  registerDirectoryTools(server, peopleClient);
+  registerAvailabilityTools(server, client);
 
   return server;
 }

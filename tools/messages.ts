@@ -365,4 +365,174 @@ Error Handling:
       }
     }
   );
+
+  server.registerTool(
+    "google_chat_update_message",
+    {
+      title: "Edit Google Chat Message",
+      description: `Edit the text of an existing message you (the authenticated user) previously sent.
+
+Args:
+  - message_name (string): Full message resource name, e.g. "spaces/AAAA/messages/BBBB"
+  - text (string): New message body to replace the old one (max 4096 chars)
+
+Returns: The updated message.
+
+Examples:
+  - Use when: "Fix the typo in the message I just sent" -> message_name + corrected text
+
+Error Handling:
+  - Returns "Error: Permission denied" if the message wasn't sent by the authenticated user`,
+      inputSchema: z
+        .object({
+          message_name: z.string().min(1).describe('Full message resource name, e.g. "spaces/AAAA/messages/BBBB".'),
+          text: z.string().min(1).max(4096).describe("New message text."),
+        })
+        .strict(),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params: { message_name: string; text: string }) => {
+      try {
+        const updated = await client.request<ChatMessage>("PATCH", params.message_name, {
+          params: { updateMask: "text" },
+          data: { text: params.text },
+        });
+        return {
+          content: [{ type: "text", text: `Message updated: \`${updated.name}\`.` }],
+          structuredContent: { name: updated.name, text: updated.text },
+        };
+      } catch (error) {
+        return { content: [{ type: "text", text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  server.registerTool(
+    "google_chat_delete_message",
+    {
+      title: "Delete Google Chat Message",
+      description: `Permanently delete a message you (the authenticated user) previously sent. This is IRREVERSIBLE.
+
+Args:
+  - message_name (string): Full message resource name, e.g. "spaces/AAAA/messages/BBBB"
+
+Returns: Confirmation of deletion.
+
+Error Handling:
+  - Returns "Error: Permission denied" if the message wasn't sent by the authenticated user (space managers can delete any message they own; deleting others' messages generally requires being the space app/manager)`,
+      inputSchema: z.object({ message_name: z.string().min(1).describe('Full message resource name, e.g. "spaces/AAAA/messages/BBBB".') }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async (params: { message_name: string }) => {
+      try {
+        await client.request("DELETE", params.message_name);
+        return {
+          content: [{ type: "text", text: `Message ${params.message_name} deleted.` }],
+          structuredContent: { deleted: params.message_name },
+        };
+      } catch (error) {
+        return { content: [{ type: "text", text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  server.registerTool(
+    "google_chat_pin_message",
+    {
+      title: "Pin Google Chat Message",
+      description: `Pin a message in its space so it's highlighted for all members.
+
+Args:
+  - message_name (string): Full message resource name, e.g. "spaces/AAAA/messages/BBBB"
+
+Returns: The created pin's resource name.
+
+Examples:
+  - Use when: "Pin that announcement message" -> message_name
+
+Error Handling:
+  - Returns "Error: Permission denied" if the authenticated user isn't a manager of the space`,
+      inputSchema: z.object({ message_name: z.string().min(1).describe('Full message resource name, e.g. "spaces/AAAA/messages/BBBB".') }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params: { message_name: string }) => {
+      try {
+        const spaceName = params.message_name.split("/messages/")[0];
+        const pin = await client.request<{ name?: string }>("POST", `${spaceName}/messagePins`, {
+          data: { name: params.message_name },
+        });
+        return {
+          content: [{ type: "text", text: `Pinned ${params.message_name}.` }],
+          structuredContent: { name: pin.name },
+        };
+      } catch (error) {
+        return { content: [{ type: "text", text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  server.registerTool(
+    "google_chat_unpin_message",
+    {
+      title: "Unpin Google Chat Message",
+      description: `Remove the pin from a previously pinned message.
+
+Args:
+  - message_name (string): Full message resource name, e.g. "spaces/AAAA/messages/BBBB"
+
+Returns: Confirmation the pin was removed.
+
+Error Handling:
+  - Returns "Error: Resource not found" if the message wasn't pinned`,
+      inputSchema: z.object({ message_name: z.string().min(1).describe('Full message resource name, e.g. "spaces/AAAA/messages/BBBB".') }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async (params: { message_name: string }) => {
+      try {
+        const spaceName = params.message_name.split("/messages/")[0];
+        const messageId = params.message_name.split("/messages/")[1];
+        await client.request("DELETE", `${spaceName}/messagePins/${messageId}`);
+        return {
+          content: [{ type: "text", text: `Unpinned ${params.message_name}.` }],
+          structuredContent: { unpinned: params.message_name },
+        };
+      } catch (error) {
+        return { content: [{ type: "text", text: handleApiError(error) }] };
+      }
+    }
+  );
+
+  server.registerTool(
+    "google_chat_list_pinned_messages",
+    {
+      title: "List Pinned Google Chat Messages",
+      description: `List the messages currently pinned in a Google Chat space.
+
+Args:
+  - space_name (string): Space resource name, e.g. "spaces/AAAAxxxxxxx"
+
+Returns: { "count": number, "pinned_message_names": string[] } - use google_chat_get_message on each name for full content.
+
+Examples:
+  - Use when: "What's pinned in the IA R&D space?" -> space_name`,
+      inputSchema: z.object({ space_name: z.string().min(1).describe(SPACE_NAME_DESC) }).strict(),
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params: { space_name: string }) => {
+      try {
+        const data = await client.request<{ messagePins?: { name?: string }[] }>("GET", `${params.space_name}/messagePins`);
+        const pins = data.messagePins ?? [];
+        if (!pins.length) {
+          return { content: [{ type: "text", text: `No pinned messages in ${params.space_name}.` }] };
+        }
+        const names = pins.map((p) => p.name).filter(Boolean) as string[];
+        return {
+          content: [{ type: "text", text: `Pinned messages in ${params.space_name}:\n${names.map((n) => `- ${n}`).join("\n")}` }],
+          structuredContent: { count: names.length, pinned_message_names: names },
+        };
+      } catch (error) {
+        return { content: [{ type: "text", text: handleApiError(error) }] };
+      }
+    }
+  );
 }

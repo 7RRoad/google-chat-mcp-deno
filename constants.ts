@@ -11,4 +11,6 @@ export const REQUIRED_SCOPES = [
   "https://www.googleapis.com/auth/chat.messages.readonly",
   "https://www.googleapis.com/auth/chat.messages.reactions",
   "https://www.googleapis.com/auth/chat.users.readstate",
+  "https://www.googleapis.com/auth/chat.users.availability",
+  "https://www.googleapis.com/auth/directory.readonly",
 ];
