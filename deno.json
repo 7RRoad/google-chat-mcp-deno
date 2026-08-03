@@ -1,0 +1,14 @@
+{
+  "unstable": ["sloppy-imports"],
+  "imports": {
+    "zod": "npm:zod@3.25.76",
+    "axios": "npm:axios@1.19.0",
+    "google-auth-library": "npm:google-auth-library@9.15.1",
+    "@modelcontextprotocol/sdk/server/mcp.js": "npm:@modelcontextprotocol/sdk@1.30.0/server/mcp.js",
+    "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js": "npm:@modelcontextprotocol/sdk@1.30.0/server/webStandardStreamableHttp.js"
+  },
+  "tasks": {
+    "start": "deno run --allow-net --allow-env main.ts",
+    "check": "deno check main.ts"
+  }
+}
