@@ -34,23 +34,33 @@ type ListSpacesInput = z.infer<typeof ListSpacesInputSchema>;
 
 const CreateSpaceInputSchema = z
   .object({
-    display_name: z.string().min(1).max(128).describe("Name shown for the new space, e.g. \"IA R&D\"."),
     space_type: z
-      .enum(["SPACE", "GROUP_CHAT"])
+      .enum(["SPACE", "GROUP_CHAT", "DIRECT_MESSAGE"])
       .default("SPACE")
       .describe(
-        'Type of conversation to create. "SPACE" is a named room (recommended for teams/topics). "GROUP_CHAT" is an unnamed group DM. Direct messages (1:1) cannot be created via this tool.'
+        'Type of conversation to create. "SPACE" is a named room (recommended for teams/topics, requires display_name). "GROUP_CHAT" is an unnamed group conversation with 2+ members. "DIRECT_MESSAGE" is a 1:1 message with exactly one other person (provide exactly one email in member_emails, no display_name).'
       ),
-    description: z.string().max(150).optional().describe("Optional short description of the space's purpose."),
+    display_name: z
+      .string()
+      .max(128)
+      .optional()
+      .describe('Name shown for the new space, e.g. "IA R&D". Required when space_type is "SPACE", ignored otherwise.'),
+    description: z.string().max(150).optional().describe("Optional short description of the space's purpose (SPACE only)."),
     member_emails: z
       .array(z.string().email())
       .max(50)
       .optional()
-      .describe("Optional list of email addresses to invite as members immediately after creating the space."),
+      .describe(
+        "Email addresses to add as members at creation time. Required (exactly one) for DIRECT_MESSAGE, required (at least one) for GROUP_CHAT, optional for SPACE."
+      ),
   })
   .strict();
 
 type CreateSpaceInput = z.infer<typeof CreateSpaceInputSchema>;
+
+interface SetupSpaceResponse extends ChatSpace {
+  name: string;
+}
 
 export function registerSpaceTools(server: McpServer, client: GoogleChatClient): void {
   server.registerTool(
@@ -143,58 +153,67 @@ Examples:
     "google_chat_create_space",
     {
       title: "Create Google Chat Space",
-      description: `Create a new Google Chat space (named room) or group chat, optionally inviting members immediately.
+      description: `Create a new Google Chat conversation - a named space (room), a group chat, or a 1:1 direct message - with its initial members added atomically in the same call.
+
+Uses the Chat API's spaces.setup method (not plain space creation), which is what supports creating direct messages and adding members at creation time in one step.
 
 Args:
-  - display_name (string): Name for the new space, e.g. "IA R&D"
-  - space_type ('SPACE' | 'GROUP_CHAT'): 'SPACE' for a named room (default, recommended), 'GROUP_CHAT' for an unnamed group DM
-  - description (string, optional): Short description of the space's purpose (max 150 chars)
-  - member_emails (string[], optional): Email addresses to invite as members right after creation
+  - space_type ('SPACE' | 'GROUP_CHAT' | 'DIRECT_MESSAGE'): Type of conversation (default 'SPACE')
+  - display_name (string): Required for 'SPACE', ignored for the other two types
+  - description (string, optional): Short description (SPACE only, max 150 chars)
+  - member_emails (string[]): Exactly one email for DIRECT_MESSAGE, one or more for GROUP_CHAT, zero or more for SPACE. The authenticated user is added automatically and should NOT be included.
 
-Returns: The created space's resource name, and per-email invite results if member_emails was provided.
+Returns: The created (or, for an existing DIRECT_MESSAGE with that person, the already-existing) space's resource name.
 
 Examples:
-  - Use when: "Create a Google Chat space called 'IA R&D' and add alice@acme.com and bob@acme.com" -> display_name="IA R&D", member_emails=["alice@acme.com","bob@acme.com"]
+  - Use when: "Send Alexandre a direct message" -> space_type="DIRECT_MESSAGE", member_emails=["alexandre@acme.com"], then google_chat_send_message on the returned space name
+  - Use when: "Create a Google Chat space called 'IA R&D' and add alice@acme.com and bob@acme.com" -> space_type="SPACE", display_name="IA R&D", member_emails=["alice@acme.com","bob@acme.com"]
   - Don't use when: You want to add members to an ALREADY EXISTING space (use google_chat_add_member instead)
 
 Error Handling:
-  - Returns "Error: Permission denied" if the authenticated user's OAuth token lacks the chat.spaces.create scope`,
+  - Returns "Error: Invalid request" if display_name is missing for space_type="SPACE", or member_emails doesn't have exactly one entry for "DIRECT_MESSAGE"
+  - Returns "Error: Permission denied" if the authenticated user's OAuth token lacks the chat.spaces.create scope
+  - If a DIRECT_MESSAGE already exists with that person, the API returns the existing space instead of creating a duplicate`,
       inputSchema: CreateSpaceInputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (params: CreateSpaceInput) => {
       try {
-        const space = await client.request<ChatSpace>("POST", "spaces", {
+        if (params.space_type === "SPACE" && !params.display_name) {
+          return { content: [{ type: "text", text: "Error: display_name is required when space_type is 'SPACE'." }] };
+        }
+        if (params.space_type === "DIRECT_MESSAGE" && (params.member_emails?.length ?? 0) !== 1) {
+          return {
+            content: [{ type: "text", text: "Error: DIRECT_MESSAGE requires exactly one email in member_emails." }],
+          };
+        }
+        if (params.space_type === "GROUP_CHAT" && !(params.member_emails?.length ?? 0)) {
+          return {
+            content: [{ type: "text", text: "Error: GROUP_CHAT requires at least one email in member_emails." }],
+          };
+        }
+
+        const memberships = (params.member_emails ?? []).map((email) => ({
+          member: { name: `users/${email}`, type: "HUMAN" },
+        }));
+
+        const space = await client.request<SetupSpaceResponse>("POST", "spaces:setup", {
           data: {
-            spaceType: params.space_type,
-            displayName: params.display_name,
-            ...(params.description ? { spaceDetails: { description: params.description } } : {}),
+            space: {
+              spaceType: params.space_type,
+              ...(params.space_type === "SPACE" ? { displayName: params.display_name } : {}),
+              ...(params.description ? { spaceDetails: { description: params.description } } : {}),
+            },
+            memberships,
           },
         });
 
-        const inviteResults: { email: string; ok: boolean; error?: string }[] = [];
-        if (params.member_emails?.length && space.name) {
-          for (const email of params.member_emails) {
-            try {
-              await client.request("POST", `${space.name}/members`, {
-                data: { member: { name: `users/${email}`, type: "HUMAN" } },
-              });
-              inviteResults.push({ email, ok: true });
-            } catch (error) {
-              inviteResults.push({ email, ok: false, error: handleApiError(error) });
-            }
-          }
-        }
-
-        const output = { name: space.name, displayName: space.displayName, spaceType: space.spaceType, invited: inviteResults };
-
-        const lines = [`Space created: **${params.display_name}** (\`${space.name}\`)`];
-        if (inviteResults.length) {
-          lines.push("", "Invite results:");
-          for (const r of inviteResults) lines.push(`- ${r.email}: ${r.ok ? "invited" : `failed - ${r.error}`}`);
-        }
-
-        return { content: [{ type: "text", text: lines.join("\n") }], structuredContent: output };
+        const output = { name: space.name, displayName: space.displayName, spaceType: space.spaceType };
+        const label = params.space_type === "SPACE" ? `**${params.display_name}**` : params.space_type;
+        return {
+          content: [{ type: "text", text: `Space ready: ${label} (\`${space.name}\`).` }],
+          structuredContent: output,
+        };
       } catch (error) {
         return { content: [{ type: "text", text: handleApiError(error) }] };
       }
